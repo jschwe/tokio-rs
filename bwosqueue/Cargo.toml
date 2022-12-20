@@ -33,5 +33,5 @@ harness = false
 
 [profile.bench]
 debug-assertions = false
-lto = true
+#lto = true
 opt-level = 3

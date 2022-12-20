@@ -1,4 +1,3 @@
-use super::metadata::AtomicIndexAndVersion;
 use crate::loom::{cell::UnsafeCell, sync::Arc};
 use array_init::array_init;
 use cache_padded::CachePadded;
@@ -61,11 +60,16 @@ mod bwsstats {
 
 #[cfg(feature = "stats")]
 pub(crate) use bwsstats::*;
+use crate::loom::sync::atomic::AtomicUsize;
+use crate::metadata;
 
 pub(crate) struct BwsQueue<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize> {
     pub(crate) blocks: CachePadded<[Block<E, { ENTRIES_PER_BLOCK }>; NUM_BLOCKS]>,
     #[cfg(feature = "stats")]
     pub(crate) stats: CachePadded<BwsStats>,
+    pub(crate) num_blocks_log: usize,
+    pub(super) num_index_bits: usize,
+    pub(super) num_entries_per_block: usize,
     _pin: PhantomPinned,
 }
 
@@ -74,25 +78,26 @@ pub(crate) struct Block<E, const NE: usize> {
     ///
     /// index == NE signals that the producer has already fully written this block.
     /// `committed` is only written to by the single producer ([Owner](super::Owner)).
-    pub(crate) committed: CachePadded<AtomicIndexAndVersion<{ NE }>>,
+    pub(crate) committed: CachePadded<AtomicUsize>,
     /// The index and version of the next readable entry in the block
     ///
     /// If consumed == committed, then there are not items that can be read in this block.
     /// `consumed` is only written by the single consumer ([Owner](super::Owner)).
-    pub(crate) consumed: CachePadded<AtomicIndexAndVersion<{ NE }>>,
+    pub(crate) consumed: CachePadded<AtomicUsize>,
     /// stealer-head - We ensure that consumer and stealer are never on same block
-    pub(crate) reserved: CachePadded<AtomicIndexAndVersion<{ NE }>>,
+    pub(crate) reserved: CachePadded<AtomicUsize>,
     /// stealer-tail - stealing finished
-    pub(crate) stolen: CachePadded<AtomicIndexAndVersion<{ NE }>>,
+    pub(crate) stolen: CachePadded<AtomicUsize>,
     /// Block specific configuration, including a reference to the next block in the bwosqueue.
-    conf: CachePadded<BlockConfig<E, { NE }>>,
+    pub(crate) conf: CachePadded<BlockConfig<E, NE>>,
     /// The storage for all entries in this block
     pub(crate) entries: CachePadded<[UnsafeCell<MaybeUninit<E>>; NE]>,
 }
 
-struct BlockConfig<E, const NE: usize> {
+pub(crate) struct BlockConfig<E, const NE: usize> {
     /// true if this Block is the HEAD of the queue.
     beginning: bool,
+    pub(crate) num_index_bits: usize,
     /// Blocks are linked together as a linked list via the `next` pointer to speed up accessing
     /// the next block. The pointer is fixed, but needs to be initialized after the Block has
     /// been put behind a shared reference in pinned memory, since we can't directly initialize
@@ -104,6 +109,7 @@ impl<E, const NE: usize> BlockConfig<E, { NE }> {
     fn new(idx: usize) -> BlockConfig<E, NE> {
         BlockConfig {
             beginning: idx == 0,
+            num_index_bits: ((NE+1).next_power_of_two() as f32).log2() as usize,
             next: UnsafeCell::new(null()),
         }
     }
@@ -112,12 +118,13 @@ impl<E, const NE: usize> BlockConfig<E, { NE }> {
 impl<E, const NE: usize> Block<E, { NE }> {
     fn new(idx: usize) -> Block<E, NE> {
         let is_queue_head = idx == 0;
+        let block_config = BlockConfig::new(idx);
         Block {
-            committed: CachePadded::new(AtomicIndexAndVersion::new_owner(is_queue_head)),
-            consumed: CachePadded::new(AtomicIndexAndVersion::new_owner(is_queue_head)),
-            reserved: CachePadded::new(AtomicIndexAndVersion::new_stealer(is_queue_head)),
-            stolen: CachePadded::new(AtomicIndexAndVersion::new_stealer(is_queue_head)),
-            conf: CachePadded::new(BlockConfig::new(idx)),
+            committed: CachePadded::new(metadata::new_owner::<NE>(is_queue_head)),
+            consumed: CachePadded::new(metadata::new_owner::<NE>(is_queue_head)),
+            reserved: CachePadded::new(metadata::new_stealer::<NE>(is_queue_head)),
+            stolen: CachePadded::new(metadata::new_stealer::<NE>(is_queue_head)),
+            conf: CachePadded::new(block_config),
             entries: CachePadded::new(array_init(|_| UnsafeCell::new(MaybeUninit::uninit()))),
         }
     }
@@ -155,6 +162,9 @@ impl<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize>
             blocks: CachePadded::new(array_init(|idx| Block::new(idx))),
             #[cfg(feature = "stats")]
             stats: CachePadded::new(BwsStats::new()),
+            num_blocks_log: (NUM_BLOCKS as f32).log2() as usize,
+            num_index_bits: ((ENTRIES_PER_BLOCK + 1).next_power_of_two() as f32).log2() as usize,
+            num_entries_per_block: ENTRIES_PER_BLOCK,
             _pin: PhantomPinned,
         });
         // Now initialize the fast-path pointers
