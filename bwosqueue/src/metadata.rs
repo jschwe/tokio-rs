@@ -20,7 +20,8 @@ pub(crate) fn pack(index: usize, version: usize, num_idx_bits: usize) -> usize {
 }
 
 /// Creates a new instance for an `Owner` field (producer or consumer)
-pub(crate) fn new_owner(is_queue_head: bool, num_idx_bits: usize) -> AtomicUsize {
+pub(crate) fn new_owner(is_queue_head: bool, num_idx_bits: usize, num_entries: usize) -> AtomicUsize {
+    assert!(num_entries <= index_mask(num_idx_bits));
     let (index, version) = if is_queue_head {
         // The first block (head) starts at version one and with an empty index
         // to indicate readiness to produce/consume once values where produced.
@@ -28,8 +29,7 @@ pub(crate) fn new_owner(is_queue_head: bool, num_idx_bits: usize) -> AtomicUsize
     } else {
         // The remaining blocks start one version behind and are marked as fully
         // produced/consumed.
-        // FIXME: Should be entries per block. Only matches for powers of two!
-        (index_mask(num_idx_bits), 0)
+        (num_entries, 0)
     };
     let packed = pack(index, version, num_idx_bits);
     AtomicUsize::new(packed)

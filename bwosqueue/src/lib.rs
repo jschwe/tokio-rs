@@ -63,7 +63,7 @@ use crate::metadata::{pack, unpack};
 ///
 /// The owner is both the single producer and single consumer.
 #[repr(align(128))]
-pub struct Owner<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize> {
+pub struct Owner<E, const ENTRIES_PER_BLOCK: usize> {
     /// Producer cache (single producer）- points to block in self.queue.
     pcache: CachePadded<*const Block<E, { ENTRIES_PER_BLOCK }>>,
     /// Consumer cache (single consumer) - points to block in self.queue.
@@ -72,7 +72,7 @@ pub struct Owner<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize> {
     spos: CachePadded<Arc<AtomicUsize>>,
     /// `Arc` to the actual queue to ensure the queue lives at least as long as the Owner.
     #[allow(dead_code)]
-    queue: Pin<Arc<BwsQueue<E, NUM_BLOCKS, ENTRIES_PER_BLOCK>>>,
+    queue: Pin<Arc<BwsQueue<E, ENTRIES_PER_BLOCK>>>,
 }
 
 /// A Stealer interface to the BWoS queue
@@ -80,11 +80,11 @@ pub struct Owner<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize> {
 /// There may be multiple stealers. Stealers share the stealer position which is used to quickly look up
 /// the next block for attempted stealing.
 #[repr(align(128))]
-pub struct Stealer<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize> {
+pub struct Stealer<E, const ENTRIES_PER_BLOCK: usize> {
     /// The actual stealer position is `self.spos % NUM_BLOCKS`. The position is incremented beyond
     /// `NUM_BLOCKS` to detect ABA problems.
     spos: CachePadded<Arc<AtomicUsize>>,
-    queue: Pin<Arc<BwsQueue<E, NUM_BLOCKS, ENTRIES_PER_BLOCK>>>,
+    queue: Pin<Arc<BwsQueue<E, ENTRIES_PER_BLOCK>>>,
 }
 
 /// An iterator over elements of one Block
@@ -107,23 +107,23 @@ pub struct StealerBlockIter<'a, E, const ENTRIES_PER_BLOCK: usize> {
     i: usize,
 }
 
-unsafe impl<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize> Send
-    for Owner<E, NUM_BLOCKS, ENTRIES_PER_BLOCK>
+unsafe impl<E, const ENTRIES_PER_BLOCK: usize> Send
+    for Owner<E, ENTRIES_PER_BLOCK>
 {
 }
 
-unsafe impl<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize> Send
-    for Stealer<E, NUM_BLOCKS, ENTRIES_PER_BLOCK>
+unsafe impl<E, const ENTRIES_PER_BLOCK: usize> Send
+    for Stealer<E, ENTRIES_PER_BLOCK>
 {
 }
 
-unsafe impl<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize> Sync
-    for Stealer<E, NUM_BLOCKS, ENTRIES_PER_BLOCK>
+unsafe impl<E, const ENTRIES_PER_BLOCK: usize> Sync
+    for Stealer<E, ENTRIES_PER_BLOCK>
 {
 }
 
-impl<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize>
-    Owner<E, NUM_BLOCKS, ENTRIES_PER_BLOCK>
+impl<E, const ENTRIES_PER_BLOCK: usize>
+    Owner<E, ENTRIES_PER_BLOCK>
 {
     /// Try to enqueue `t` into the FIFO queue.
     ///
@@ -261,8 +261,8 @@ impl<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize>
     }
 }
 
-impl<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize>
-    Owner<E, NUM_BLOCKS, ENTRIES_PER_BLOCK>
+impl<E, const ENTRIES_PER_BLOCK: usize>
+    Owner<E, ENTRIES_PER_BLOCK>
 {
     /// Try to dequeue the oldest element in the queue.
     #[inline(always)]
@@ -405,10 +405,11 @@ impl<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize>
 
     pub fn has_stealers(&self) -> bool {
         let curr_spos = self.spos.load(Relaxed);
+        let num_blocks = self.queue.num_blocks;
         // spos increments beyond NUM_BLOCKS to prevent ABA problems.
-        let start_block_idx = curr_spos % NUM_BLOCKS;
-        for i in 0..NUM_BLOCKS {
-            let block_idx = (start_block_idx + i) % NUM_BLOCKS;
+        let start_block_idx = curr_spos % num_blocks;
+        for i in 0..num_blocks {
+            let block_idx = (start_block_idx + i) % num_blocks;
             let blk: &Block<E, ENTRIES_PER_BLOCK> = &self.queue.blocks[block_idx];
             let stolen = blk.stolen.load(Relaxed);
             let reserved = blk.reserved.load(Relaxed);
@@ -445,8 +446,8 @@ impl<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize>
     }
 }
 
-impl<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize> Clone
-    for Stealer<E, NUM_BLOCKS, ENTRIES_PER_BLOCK>
+impl<E, const ENTRIES_PER_BLOCK: usize> Clone
+    for Stealer<E, ENTRIES_PER_BLOCK>
 {
     fn clone(&self) -> Self {
         Self {
@@ -456,8 +457,8 @@ impl<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize> Clone
     }
 }
 
-impl<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize>
-    Stealer<E, NUM_BLOCKS, ENTRIES_PER_BLOCK>
+impl<E, const ENTRIES_PER_BLOCK: usize>
+    Stealer<E, ENTRIES_PER_BLOCK>
 {
     /// Try to steal a single item from the queue
     #[inline]
@@ -515,7 +516,7 @@ impl<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize>
     fn curr_block(&self) -> (&Block<E, ENTRIES_PER_BLOCK>, usize) {
         let curr_spos = self.spos.load(Relaxed);
         // spos increments beyond NUM_BLOCKS to prevent ABA problems.
-        let block_idx = curr_spos % NUM_BLOCKS;
+        let block_idx = curr_spos % self.queue.num_blocks;
         let blk: &Block<E, ENTRIES_PER_BLOCK> = &self.queue.blocks[block_idx];
         (blk, curr_spos)
     }
@@ -683,15 +684,15 @@ impl<'a, E, const ENTRIES_PER_BLOCK: usize> core::fmt::Debug
 /// Thieves however will prefer a higher `NUM_BLOCKS` count since it makes it easier to
 /// steal a whole block.
 pub fn new<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize>() -> (
-    Owner<E, { NUM_BLOCKS }, { ENTRIES_PER_BLOCK }>,
-    Stealer<E, { NUM_BLOCKS }, { ENTRIES_PER_BLOCK }>,
+    Owner<E, { ENTRIES_PER_BLOCK }>,
+    Stealer<E, { ENTRIES_PER_BLOCK }>,
 ) {
     assert!(NUM_BLOCKS.checked_mul(ENTRIES_PER_BLOCK).is_some());
     assert!(NUM_BLOCKS.is_power_of_two());
     assert!(NUM_BLOCKS >= 1);
     assert!(ENTRIES_PER_BLOCK >= 1);
 
-    let q: Pin<Arc<BwsQueue<E, NUM_BLOCKS, ENTRIES_PER_BLOCK>>> = BwsQueue::new();
+    let q: Pin<Arc<BwsQueue<E, ENTRIES_PER_BLOCK>>> = BwsQueue::new(NUM_BLOCKS);
     let first_block = &q.blocks[0];
 
     let stealer_position = Arc::new(AtomicUsize::new(0));

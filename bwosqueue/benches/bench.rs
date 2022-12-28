@@ -34,11 +34,11 @@ fn bench_stealing(c: &mut Criterion) {
     let tokio_q_single = QueueType::TokioStealSingleItems;
     let tokio_q_batch = QueueType::TokioStealHalf;
 
-    bench_steal::<8, 32>(&mut stealer_group, tokio_q_single, 0);
-    bench_steal::<8, 32>(&mut stealer_group, tokio_q_single, 1);
-    bench_steal::<8, 32>(&mut stealer_group, tokio_q_single, 2);
-    bench_steal::<8, 32>(&mut stealer_group, tokio_q_batch, 1);
-    bench_steal::<8, 32>(&mut stealer_group, tokio_q_batch, 2);
+    // bench_steal::<8, 32>(&mut stealer_group, tokio_q_single, 0);
+    // bench_steal::<8, 32>(&mut stealer_group, tokio_q_single, 1);
+    // bench_steal::<8, 32>(&mut stealer_group, tokio_q_single, 2);
+    // bench_steal::<8, 32>(&mut stealer_group, tokio_q_batch, 1);
+    // bench_steal::<8, 32>(&mut stealer_group, tokio_q_batch, 2);
 
     bench_steal::<8, 32>(&mut stealer_group, bwos_single, 0);
     bench_steal::<8, 32>(&mut stealer_group, bwos_single, 1);
@@ -48,22 +48,22 @@ fn bench_stealing(c: &mut Criterion) {
 
 fn simple_enqueue_dequeue(c: &mut Criterion) {
     let mut group = c.benchmark_group("Simple Enqueue Dequeue");
-    simple_enqueue_dequeue_original_queue_inner::<{ 8 * 32 }>(&mut group);
-    simple_enqueue_dequeue_original_queue_inner::<{ 8 * 128 }>(&mut group);
-    simple_enqueue_dequeue_original_queue_inner::<{ 8 * 512 }>(&mut group);
+    // simple_enqueue_dequeue_original_queue_inner::<{ 8 * 32 }>(&mut group);
+    // simple_enqueue_dequeue_original_queue_inner::<{ 8 * 128 }>(&mut group);
+    // simple_enqueue_dequeue_original_queue_inner::<{ 8 * 512 }>(&mut group);
     simple_enqueue_dequeue_original_queue_inner::<{ 8 * 1024 }>(&mut group);
     simple_enqueue_dequeue_inner::<8, 32>(&mut group);
-    simple_enqueue_dequeue_inner::<8, 128>(&mut group);
-    simple_enqueue_dequeue_inner::<8, 512>(&mut group);
+    // simple_enqueue_dequeue_inner::<8, 128>(&mut group);
+    // simple_enqueue_dequeue_inner::<8, 512>(&mut group);
     simple_enqueue_dequeue_inner::<8, 1024>(&mut group);
-    simple_enqueue_dequeue_inner::<32, 8>(&mut group);
-    simple_enqueue_dequeue_inner::<128, 2>(&mut group);
-    simple_enqueue_dequeue_inner::<256, 1>(&mut group);
+    // simple_enqueue_dequeue_inner::<32, 8>(&mut group);
+    // simple_enqueue_dequeue_inner::<128, 2>(&mut group);
+    // simple_enqueue_dequeue_inner::<256, 1>(&mut group);
     simple_enqueue_dequeue_original_bwos_queue(&mut group);
 }
 
 #[inline(never)]
-fn bwos_enq_deq<const NB: usize, const NE: usize>(owner: &mut bwosqueue::Owner<u64, NB, NE>) {
+fn bwos_enq_deq<const NE: usize>(owner: &mut bwosqueue::Owner<u64, NE>) {
     while owner.enqueue(black_box(5)).is_ok() {}
     loop {
         if let Some(val) = owner.dequeue() {
@@ -157,9 +157,9 @@ fn simple_enqueue_dequeue_original_bwos_queue(group: &mut BenchmarkGroup<WallTim
     // one full enqueue + one full dequeue
 }
 
-enum StealKind<const NB: usize, const NE: usize> {
-    BwosSingleSteal(Stealer<u64, NB, NE>),
-    BwosBlockSteal(Stealer<u64, NB, NE>),
+enum StealKind<const NE: usize> {
+    BwosSingleSteal(Stealer<u64, NE>),
+    BwosBlockSteal(Stealer<u64, NE>),
     // Just use 8K for the tokio queue, since the size doesn't really matter for this queue and we can't
     // use generic const expressions here.
     TokioSingleSteal(original_tokio_queue::Steal<u64, 8192>),
@@ -170,9 +170,9 @@ enum StealKind<const NB: usize, const NE: usize> {
     BwosUnsafeSingleSteal(original_bwos::Stealer<u64>),
 }
 
-struct StealTest<const NB: usize, const NE: usize> {
-    owner: QueueOwner<NB, NE>,
-    stealer: StealKind<NB, NE>,
+struct StealTest< const NE: usize> {
+    owner: QueueOwner<NE>,
+    stealer: StealKind<NE>,
     params: StealTestParams,
 }
 
@@ -185,8 +185,8 @@ struct StealTestParams {
     stealer_idle_ops: usize,
 }
 
-fn bwos_steal_block_thread<const NB: usize, const NE: usize>(
-    stealer: Stealer<u64, NB, NE>,
+fn bwos_steal_block_thread<const NE: usize>(
+    stealer: Stealer<u64, NE>,
     params: StealTestParams,
 ) {
     params.num_ready_stealers.fetch_add(1, Release);
@@ -214,8 +214,8 @@ fn bwos_steal_block_thread<const NB: usize, const NE: usize>(
     }
 }
 
-fn bwos_steal_single_item_thread<const NB: usize, const NE: usize>(
-    stealer: Stealer<u64, NB, NE>,
+fn bwos_steal_single_item_thread<const NE: usize>(
+    stealer: Stealer<u64, NE>,
     params: StealTestParams,
 ) {
     params.num_ready_stealers.fetch_add(1, Release);
@@ -312,7 +312,7 @@ fn tokio_q_steal_single_item_thread(
 /// Sets up stealers to only steals items, without enqueuing them into a different queue.
 /// This allows us to measure only the overhead of the stealing operation, without
 /// any side effects from an enqueue into a different queue.
-fn setup_stealers<const NB: usize, const NE: usize>(steal_test: &StealTest<NB, NE>) {
+fn setup_stealers<const NE: usize>(steal_test: &StealTest<NE>) {
     let params = &steal_test.params;
     // ensure any remaining stealer threads from previous run have shutdown.
     while params.num_ready_stealers.load(SeqCst) != 0 {}
@@ -351,8 +351,8 @@ fn setup_stealers<const NB: usize, const NE: usize>(steal_test: &StealTest<NB, N
 
 // Owner thread implementation which enqueues for a configurable amount of items
 // as fast as possible, dequeuing until empty once the queue is full.
-fn bwos_owner_thread<const NB: usize, const NE: usize>(
-    owner: &mut Owner<u64, NB, NE>,
+fn bwos_owner_thread<const NE: usize>(
+    owner: &mut Owner<u64, NE>,
     num_enqueues: u64,
     total_enqueues: &mut u64,
     total_dequeues: &mut u64,
@@ -485,8 +485,8 @@ enum QueueType {
     BwosUnsafe,
 }
 
-enum QueueOwner<const NB: usize, const NE: usize> {
-    Bwos(bwosqueue::Owner<u64, NB, NE>),
+enum QueueOwner< const NE: usize> {
+    Bwos(bwosqueue::Owner<u64, NE>),
     Tokio(original_tokio_queue::Local<u64, 8192>),
     BwosUnsafe((original_bwos::Producer<u64>, original_bwos::Consumer<u64>)),
 }

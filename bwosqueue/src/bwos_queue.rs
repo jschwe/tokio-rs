@@ -63,10 +63,11 @@ pub(crate) use bwsstats::*;
 use crate::loom::sync::atomic::AtomicUsize;
 use crate::metadata;
 
-pub(crate) struct BwsQueue<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize> {
-    pub(crate) blocks: CachePadded<[Block<E, { ENTRIES_PER_BLOCK }>; NUM_BLOCKS]>,
+pub(crate) struct BwsQueue<E,const ENTRIES_PER_BLOCK: usize> {
+    pub(crate) blocks: Box<[Block<E, { ENTRIES_PER_BLOCK }>]>,
     #[cfg(feature = "stats")]
     pub(crate) stats: CachePadded<BwsStats>,
+    pub(crate) num_blocks: usize,
     pub(crate) num_blocks_log: usize,
     pub(super) num_index_bits: usize,
     pub(super) num_entries_per_block: usize,
@@ -120,8 +121,8 @@ impl<E, const NE: usize> Block<E, { NE }> {
         let is_queue_head = idx == 0;
         let block_config = BlockConfig::new(idx);
         Block {
-            committed: CachePadded::new(metadata::new_owner(is_queue_head, block_config.num_index_bits)),
-            consumed: CachePadded::new(metadata::new_owner(is_queue_head, block_config.num_index_bits)),
+            committed: CachePadded::new(metadata::new_owner(is_queue_head, block_config.num_index_bits, NE)),
+            consumed: CachePadded::new(metadata::new_owner(is_queue_head, block_config.num_index_bits, NE)),
             reserved: CachePadded::new(metadata::new_stealer(is_queue_head, block_config.num_index_bits)),
             stolen: CachePadded::new(metadata::new_stealer(is_queue_head, block_config.num_index_bits)),
             conf: CachePadded::new(block_config),
@@ -144,31 +145,32 @@ impl<E, const NE: usize> Block<E, { NE }> {
     }
 }
 
-impl<E, const NUM_BLOCKS: usize, const ENTRIES_PER_BLOCK: usize>
-    BwsQueue<E, { NUM_BLOCKS }, { ENTRIES_PER_BLOCK }>
+impl<E, const ENTRIES_PER_BLOCK: usize>
+    BwsQueue<E, { ENTRIES_PER_BLOCK }>
 {
-    const _ASSERT_NUM_BLOCKS_POW2: () = assert!(NUM_BLOCKS.is_power_of_two());
-    const _ASSERT_NUM_GREATER_1: () = assert!(NUM_BLOCKS > 1);
 
-    pub(crate) fn new() -> Pin<Arc<Self>> {
-        // We need to "use" the assertions here, otherwise the compile-time assertions are ignored.
-        #[allow(clippy::let_unit_value)]
-        let _ = Self::_ASSERT_NUM_BLOCKS_POW2;
-        #[allow(clippy::let_unit_value)]
-        let _ = Self::_ASSERT_NUM_GREATER_1;
+    pub(crate) fn new(num_blocks: usize) -> Pin<Arc<Self>> {
+        assert!(num_blocks.is_power_of_two());
+        assert!(num_blocks > 1);
+
+        let mut blocks = Vec::with_capacity(num_blocks);
+        for idx in 0..num_blocks {
+            blocks.push(Block::new(idx))
+        }
 
         // First create and pin the queue on the heap
         let q = Arc::pin(BwsQueue {
-            blocks: CachePadded::new(array_init(|idx| Block::new(idx))),
+            blocks: blocks.into_boxed_slice(),
             #[cfg(feature = "stats")]
             stats: CachePadded::new(BwsStats::new()),
-            num_blocks_log: (NUM_BLOCKS as f32).log2() as usize,
+            num_blocks,
+            num_blocks_log: (num_blocks as f32).log2() as usize,
             num_index_bits: ((ENTRIES_PER_BLOCK + 1).next_power_of_two() as f32).log2() as usize,
             num_entries_per_block: ENTRIES_PER_BLOCK,
             _pin: PhantomPinned,
         });
         // Now initialize the fast-path pointers
-        let blocks: &[Block<E, { ENTRIES_PER_BLOCK }>; NUM_BLOCKS] = &q.blocks;
+        let blocks: &[Block<E, { ENTRIES_PER_BLOCK }>] = &q.blocks;
         for block_window in blocks.windows(2) {
             // Note: This cannot panic since we asserted at compile-time that BwsQueue has at least
             // 2 blocks
